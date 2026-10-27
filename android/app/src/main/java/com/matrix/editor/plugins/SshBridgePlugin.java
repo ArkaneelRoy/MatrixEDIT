@@ -13,22 +13,21 @@ import com.jcraft.jsch.ChannelShell;
 import com.jcraft.jsch.JSch;
 import com.jcraft.jsch.Session;
 
-import java.io.BufferedReader;
-import java.io.ByteArrayInputStream;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.InputStreamReader;
-import java.io.OutputStream;
+import java.io.*;
 import java.nio.charset.StandardCharsets;
+import java.util.Map;
 import java.util.Vector;
+import java.util.concurrent.ConcurrentHashMap;
 
 @CapacitorPlugin(name = "SshBridge")
 public class SshBridgePlugin extends Plugin {
     private final JSch jsch = new JSch();
     private Session session;
     private ChannelSftp sftpChannel;
-    private ChannelShell shellChannel;
-    private OutputStream shellOut;
+    
+    // Multi-session tracking for split terminals
+    private final Map<String, ChannelShell> shellChannels = new ConcurrentHashMap<>();
+    private final Map<String, OutputStream> shellOutputs = new ConcurrentHashMap<>();
 
     @PluginMethod
     public void connect(PluginCall call) {
@@ -39,7 +38,6 @@ public class SshBridgePlugin extends Plugin {
 
         new Thread(() -> {
             try {
-                // Close existing session if active
                 disconnectChannels();
 
                 session = jsch.getSession(user, host, port);
@@ -47,22 +45,12 @@ public class SshBridgePlugin extends Plugin {
                 session.setConfig("StrictHostKeyChecking", "no");
                 session.connect(15000);
 
-                // Open SFTP Channel
                 Channel sftp = session.openChannel("sftp");
                 sftp.connect(10000);
                 sftpChannel = (ChannelSftp) sftp;
 
-                // Open PTY Shell Channel
-                Channel shell = session.openChannel("shell");
-                shellChannel = (ChannelShell) shell;
-                shellChannel.setPtyType("xterm-256color");
-                
-                InputStream shellIn = shellChannel.getInputStream();
-                shellOut = shellChannel.getOutputStream();
-                shellChannel.connect(10000);
-
-                // Pipe incoming shell bytes back to JS frontend
-                listenToShell(shellIn);
+                // Spawn default initial terminal (id: "term-1")
+                createShellInstance("term-1");
 
                 call.resolve();
             } catch (Exception e) {
@@ -71,15 +59,44 @@ public class SshBridgePlugin extends Plugin {
         }).start();
     }
 
-    private void listenToShell(InputStream in) {
+    @PluginMethod
+    public void openTerminalSession(PluginCall call) {
+        String sessionId = call.getString("id");
+        if (session == null || !session.isConnected()) {
+            call.reject("Not connected to SSH");
+            return;
+        }
+
+        new Thread(() -> {
+            try {
+                createShellInstance(sessionId);
+                call.resolve();
+            } catch (Exception e) {
+                call.reject("Failed to spawn shell: " + e.getMessage());
+            }
+        }).start();
+    }
+
+    private void createShellInstance(String sessionId) throws Exception {
+        ChannelShell shell = (ChannelShell) session.openChannel("shell");
+        shell.setPtyType("xterm-256color");
+
+        InputStream in = shell.getInputStream();
+        OutputStream out = shell.getOutputStream();
+        shell.connect(10000);
+
+        shellChannels.put(sessionId, shell);
+        shellOutputs.put(sessionId, out);
+
         new Thread(() -> {
             byte[] buffer = new byte[2048];
             int read;
             try {
                 while ((read = in.read(buffer)) != -1) {
-                    String text = new String(buffer, 0, read, StandardCharsets.UTF_8);
+                    String chunk = new String(buffer, 0, read, StandardCharsets.UTF_8);
                     JSObject data = new JSObject();
-                    data.put("chunk", text);
+                    data.put("id", sessionId);
+                    data.put("chunk", chunk);
                     notifyListeners("terminalData", data);
                 }
             } catch (IOException ignored) {}
@@ -88,18 +105,31 @@ public class SshBridgePlugin extends Plugin {
 
     @PluginMethod
     public void sendTerminalInput(PluginCall call) {
+        String sessionId = call.getString("id", "term-1");
         String data = call.getString("data", "");
         try {
-            if (shellOut != null) {
-                shellOut.write(data.getBytes(StandardCharsets.UTF_8));
-                shellOut.flush();
+            OutputStream out = shellOutputs.get(sessionId);
+            if (out != null) {
+                out.write(data.getBytes(StandardCharsets.UTF_8));
+                out.flush();
                 call.resolve();
             } else {
-                call.reject("Shell not connected");
+                call.reject("Session not found: " + sessionId);
             }
         } catch (Exception e) {
             call.reject(e.getMessage());
         }
+    }
+
+    @PluginMethod
+    public void closeTerminalSession(PluginCall call) {
+        String sessionId = call.getString("id");
+        ChannelShell shell = shellChannels.remove(sessionId);
+        shellOutputs.remove(sessionId);
+        if (shell != null && shell.isConnected()) {
+            shell.disconnect();
+        }
+        call.resolve();
     }
 
     @PluginMethod
@@ -235,8 +265,13 @@ public class SshBridgePlugin extends Plugin {
 
     private void disconnectChannels() {
         try {
+            for (ChannelShell sh : shellChannels.values()) {
+                if (sh != null && sh.isConnected()) sh.disconnect();
+            }
+            shellChannels.clear();
+            shellOutputs.clear();
+
             if (sftpChannel != null && sftpChannel.isConnected()) sftpChannel.disconnect();
-            if (shellChannel != null && shellChannel.isConnected()) shellChannel.disconnect();
             if (session != null && session.isConnected()) session.disconnect();
         } catch (Exception ignored) {}
     }

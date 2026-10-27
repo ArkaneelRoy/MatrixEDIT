@@ -1,6 +1,9 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import fuzzysort from 'fuzzysort';
+  import { Splitpanes, Pane } from 'splitpanes';
+  import 'splitpanes/dist/splitpanes.css';
+
   import { Ssh } from './lib/ssh';
   import Editor from './lib/Editor.svelte';
   import Terminal from './lib/Terminal.svelte';
@@ -16,31 +19,45 @@
     X, 
     Search, 
     ChevronRight, 
-    ChevronDown,
-    FilePlus,
-    FolderPlus,
-    Edit2,
-    Trash2,
-    PanelLeftClose,
-    PanelLeft,
+    ChevronDown, 
+    FilePlus, 
+    FolderPlus, 
+    Edit2, 
+    Trash2, 
+    PanelLeftClose, 
+    PanelLeft, 
     Settings as SettingsIcon,
-    Check
+    Columns2,
+    Rows2
   } from 'lucide-svelte';
 
-  // --- State (Svelte 5 Runes) ---
+  // --- State ---
   let tree = $state<FileNode[]>([]);
   let openTabs = $state<TabItem[]>([]);
-  let activeTabPath = $state<string>('');
-  let activeTabContent = $state<string>('');
   let rootPath = $state('/data/data/com.termux/files/home');
-  let vimMode = $state('NORMAL');
-  let cursorCoords = $state('1:1');
   let isTerminalOpen = $state(true);
   let isSidebarOpen = $state(true);
   let statusMessage = $state('Disconnected');
   let isConnected = $state(false);
 
-  // Settings State with Persistence
+  // Split Editor Layout State
+  let isEditorSplit = $state(false);
+  let splitDirection = $state<'vertical' | 'horizontal'>('vertical');
+  let activePaneIndex = $state<0 | 1>(0);
+
+  // Pane 0 (Primary)
+  let pane0Path = $state<string>('');
+  let pane0Content = $state<string>('');
+  let pane0VimMode = $state('NORMAL');
+  let pane0Cursor = $state('1:1');
+
+  // Pane 1 (Secondary Split)
+  let pane1Path = $state<string>('');
+  let pane1Content = $state<string>('');
+  let pane1VimMode = $state('NORMAL');
+  let pane1Cursor = $state('1:1');
+
+  // Settings
   let showSettingsModal = $state(false);
   let settings = $state<EditorSettings>({
     theme: (localStorage.getItem('me_theme') as EditorTheme) || 'oneDark',
@@ -51,7 +68,7 @@
     vimEnabled: localStorage.getItem('me_vim') !== 'false'
   });
 
-  // Modals & Action States
+  // Modal States
   let isPaletteOpen = $state(false);
   let paletteQuery = $state('');
   let allFlattenedFiles = $state<string[]>([]);
@@ -67,7 +84,8 @@
   let sshPass = $state(localStorage.getItem('me_ssh_pass') || '');
   let showConnectDialog = $state(false);
 
-  let editorRef: any;
+  let editorRef0: any;
+  let editorRef1: any;
 
   function updateSetting<K extends keyof EditorSettings>(key: K, value: EditorSettings[K]) {
     settings[key] = value;
@@ -95,7 +113,7 @@
       }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
         e.preventDefault();
-        saveCurrentTab();
+        saveActivePane();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
@@ -171,32 +189,59 @@
       tab = { name: path.split('/').pop() || 'untitled', path, content: res.content, isDirty: false };
       openTabs.push(tab);
     }
-    activeTabPath = tab.path;
-    activeTabContent = tab.content;
+
+    if (activePaneIndex === 0) {
+      pane0Path = tab.path;
+      pane0Content = tab.content;
+    } else {
+      pane1Path = tab.path;
+      pane1Content = tab.content;
+    }
     isPaletteOpen = false;
   }
 
-  function closeTab(e: MouseEvent, path: string) {
-    e.stopPropagation();
-    const index = openTabs.findIndex(t => t.path === path);
-    if (index === -1) return;
-    openTabs.splice(index, 1);
-    if (activeTabPath === path) {
-      const nextTab = openTabs[index] || openTabs[index - 1];
-      if (nextTab) {
-        activeTabPath = nextTab.path;
-        activeTabContent = nextTab.content;
-      } else {
-        activeTabPath = '';
-        activeTabContent = '';
+  function toggleEditorSplit(dir: 'vertical' | 'horizontal') {
+    if (isEditorSplit && splitDirection === dir) {
+      isEditorSplit = false;
+      activePaneIndex = 0;
+    } else {
+      isEditorSplit = true;
+      splitDirection = dir;
+      if (!pane1Path && openTabs.length > 1) {
+        const otherTab = openTabs.find(t => t.path !== pane0Path) || openTabs[0];
+        pane1Path = otherTab.path;
+        pane1Content = otherTab.content;
+      } else if (!pane1Path) {
+        pane1Path = pane0Path;
+        pane1Content = pane0Content;
       }
     }
   }
 
-  async function saveCurrentTab() {
-    const tab = openTabs.find(t => t.path === activeTabPath);
+  function closeTab(e: MouseEvent, path: string) {
+    e.stopPropagation();
+    const idx = openTabs.findIndex(t => t.path === path);
+    if (idx === -1) return;
+    openTabs.splice(idx, 1);
+
+    if (pane0Path === path) {
+      const next = openTabs[0];
+      pane0Path = next?.path || '';
+      pane0Content = next?.content || '';
+    }
+    if (pane1Path === path) {
+      const next = openTabs[0];
+      pane1Path = next?.path || '';
+      pane1Content = next?.content || '';
+    }
+  }
+
+  async function saveActivePane() {
+    const activePath = activePaneIndex === 0 ? pane0Path : pane1Path;
+    const activeContent = activePaneIndex === 0 ? pane0Content : pane1Content;
+    const tab = openTabs.find(t => t.path === activePath);
     if (!tab || !isConnected) return;
-    await Ssh.writeFile({ path: tab.path, content: activeTabContent });
+    await Ssh.writeFile({ path: tab.path, content: activeContent });
     tab.isDirty = false;
     statusMessage = `Saved ${tab.name}`;
     setTimeout(() => { statusMessage = `${sshHost}:${sshPort}`; }, 2000);
@@ -254,7 +299,7 @@
 </script>
 
 <div class="me-app">
-  <!-- Navbar -->
+  <!-- Top Navigation Header -->
   <header class="me-navbar">
     <div class="nav-brand">
       <button onclick={() => isSidebarOpen = !isSidebarOpen} class="icon-btn" title="Toggle Dock (Ctrl+B)">
@@ -263,10 +308,28 @@
       <span class="brand-badge">ME</span>
       <span class="brand-name">MatrixEdit</span>
       <span class="nav-sep">│</span>
-      <span class="nav-breadcrumb">{activeTabPath ? activeTabPath.replace(rootPath, '~') : 'No open file'}</span>
+      <span class="nav-breadcrumb">{pane0Path ? pane0Path.replace(rootPath, '~') : 'Empty Workspace'}</span>
     </div>
 
     <div class="nav-actions">
+      <!-- Split Editor Actions -->
+      <button 
+        onclick={() => toggleEditorSplit('vertical')} 
+        class="icon-btn" 
+        class:active-tool={isEditorSplit && splitDirection === 'vertical'} 
+        title="Split Editor Right (:vsplit)"
+      >
+        <Columns2 size={14} />
+      </button>
+      <button 
+        onclick={() => toggleEditorSplit('horizontal')} 
+        class="icon-btn" 
+        class:active-tool={isEditorSplit && splitDirection === 'horizontal'} 
+        title="Split Editor Down (:split)"
+      >
+        <Rows2 size={14} />
+      </button>
+
       <button onclick={() => isPaletteOpen = true} class="btn-tool" title="Quick Open (Ctrl+P)">
         <Search size={13} />
         <span class="shortcut">Ctrl+P</span>
@@ -275,28 +338,29 @@
       {#if !isConnected}
         <button onclick={() => showConnectDialog = true} class="btn-connect">Connect SSH</button>
       {:else}
-        <button onclick={saveCurrentTab} class="icon-btn" title="Save (:w)"><Save size={14} /></button>
+        <button onclick={saveActivePane} class="icon-btn" title="Save (:w)"><Save size={14} /></button>
         <button onclick={loadRootDirectory} class="icon-btn" title="Refresh Tree"><RefreshCw size={14} /></button>
       {/if}
 
       <button onclick={() => isTerminalOpen = !isTerminalOpen} class="icon-btn" title="Toggle Terminal">
         <TermIcon size={14} />
       </button>
-
-      <!-- Settings Panel Trigger Button -->
       <button onclick={() => showSettingsModal = true} class="icon-btn" title="Settings (Ctrl+,)">
         <SettingsIcon size={14} />
       </button>
     </div>
   </header>
 
-  <!-- Multi-Tab Bar -->
+  <!-- VS Code Multi-Tab Bar -->
   <div class="me-tabbar">
     {#each openTabs as tab}
       <button 
-        onclick={() => { activeTabPath = tab.path; activeTabContent = tab.content; }} 
+        onclick={() => {
+          if (activePaneIndex === 0) { pane0Path = tab.path; pane0Content = tab.content; }
+          else { pane1Path = tab.path; pane1Content = tab.content; }
+        }} 
         class="tab-pill" 
-        class:active-tab={tab.path === activeTabPath}
+        class:active-tab={(activePaneIndex === 0 ? pane0Path : pane1Path) === tab.path}
       >
         <FileCode size={12} class="tab-icon" />
         <span class="tab-title">{tab.name}</span>
@@ -308,7 +372,7 @@
 
   <!-- Workspace Shell -->
   <div class="me-workspace">
-    <!-- Tree Sidebar -->
+    <!-- Tree Explorer -->
     {#if isSidebarOpen}
       <aside class="me-sidebar">
         <div class="sidebar-header">
@@ -359,31 +423,95 @@
       </aside>
     {/if}
 
-    <!-- Center Stage -->
+    <!-- Center Stage: Split Editor Support -->
     <main class="me-stage">
-      <Editor 
-        bind:this={editorRef}
-        bind:content={activeTabContent}
-        filename={activeTabPath.split('/').pop() || 'main.go'}
-        bind:vimMode
-        bind:cursorCoords
-        bind:settings
-        onContentChange={() => {
-          const tab = openTabs.find(t => t.path === activeTabPath);
-          if (tab) tab.isDirty = true;
-        }}
-      />
+      <div class="split-stage-container">
+        {#if !isEditorSplit}
+          <!-- Single Pane (Default) -->
+          <div class="editor-pane-wrapper active-pane" onclick={() => activePaneIndex = 0}>
+            <Editor 
+              bind:this={editorRef0}
+              bind:content={pane0Content}
+              filename={pane0Path.split('/').pop() || 'main.go'}
+              bind:vimMode={pane0VimMode}
+              bind:cursorCoords={pane0Cursor}
+              bind:settings
+              onContentChange={() => {
+                const tab = openTabs.find(t => t.path === pane0Path);
+                if (tab) tab.isDirty = true;
+              }}
+            />
+          </div>
+        {:else}
+          <!-- Dual Split Panes via Splitpanes -->
+          <Splitpanes class="me-splitpanes" horizontal={splitDirection === 'horizontal'}>
+            <Pane size={50}>
+              <div 
+                class="editor-pane-wrapper" 
+                class:active-pane={activePaneIndex === 0} 
+                onclick={() => activePaneIndex = 0}
+              >
+                <div class="split-pane-header">
+                  <span>{pane0Path.split('/').pop() || 'untitled'}</span>
+                  <span class="pane-tag">Pane 1</span>
+                </div>
+                <Editor 
+                  bind:this={editorRef0}
+                  bind:content={pane0Content}
+                  filename={pane0Path.split('/').pop() || 'main.go'}
+                  bind:vimMode={pane0VimMode}
+                  bind:cursorCoords={pane0Cursor}
+                  bind:settings
+                  onContentChange={() => {
+                    const tab = openTabs.find(t => t.path === pane0Path);
+                    if (tab) tab.isDirty = true;
+                  }}
+                />
+              </div>
+            </Pane>
+            <Pane size={50}>
+              <div 
+                class="editor-pane-wrapper" 
+                class:active-pane={activePaneIndex === 1} 
+                onclick={() => activePaneIndex = 1}
+              >
+                <div class="split-pane-header">
+                  <span>{pane1Path.split('/').pop() || 'untitled'}</span>
+                  <span class="pane-tag">Pane 2</span>
+                </div>
+                <Editor 
+                  bind:this={editorRef1}
+                  bind:content={pane1Content}
+                  filename={pane1Path.split('/').pop() || 'main.go'}
+                  bind:vimMode={pane1VimMode}
+                  bind:cursorCoords={pane1Cursor}
+                  bind:settings
+                  onContentChange={() => {
+                    const tab = openTabs.find(t => t.path === pane1Path);
+                    if (tab) tab.isDirty = true;
+                  }}
+                />
+              </div>
+            </Pane>
+          </Splitpanes>
+        {/if}
+      </div>
 
       <!-- Quick Action Mobile Key Strip -->
       {#if settings.vimEnabled}
         <div class="mobile-keys">
           {#each ['ESC', ':', '/', 'i', 'w', 'b', '$', '0', '{', '}', ';'] as k}
-            <button onclick={() => editorRef?.injectVimKey(k)} class="key-item">{k}</button>
+            <button 
+              onclick={() => (activePaneIndex === 0 ? editorRef0 : editorRef1)?.injectVimKey(k)} 
+              class="key-item"
+            >
+              {k}
+            </button>
           {/each}
         </div>
       {/if}
 
-      <!-- Terminal Component -->
+      <!-- Multi-Session Split Terminal Component -->
       <Terminal 
         sshPort={sshPort} 
         isConnected={isConnected} 
@@ -400,15 +528,10 @@
             <span>Editor Settings</span>
             <button onclick={() => showSettingsModal = false} class="icon-btn"><X size={14} /></button>
           </div>
-
           <div class="settings-body">
-            <!-- Theme Selection -->
             <div class="setting-item">
               <label>Color Theme</label>
-              <select 
-                value={settings.theme} 
-                onchange={(e) => updateSetting('theme', e.currentTarget.value as EditorTheme)}
-              >
+              <select value={settings.theme} onchange={(e) => updateSetting('theme', e.currentTarget.value as EditorTheme)}>
                 <option value="oneDark">One Dark</option>
                 <option value="dracula">Dracula</option>
                 <option value="tokyoNight">Tokyo Night</option>
@@ -417,50 +540,25 @@
                 <option value="materialDark">Material Dark</option>
               </select>
             </div>
-
-            <!-- Font Family Selection -->
             <div class="setting-item">
               <label>Font Family</label>
-              <select 
-                value={settings.font} 
-                onchange={(e) => updateSetting('font', e.currentTarget.value as EditorFont)}
-              >
+              <select value={settings.font} onchange={(e) => updateSetting('font', e.currentTarget.value as EditorFont)}>
                 <option value="'Fira Code', monospace">Fira Code</option>
                 <option value="'JetBrains Mono', monospace">JetBrains Mono</option>
                 <option value="monospace">System Monospace</option>
               </select>
             </div>
-
-            <!-- Font Size -->
             <div class="setting-item">
               <label>Font Size ({settings.fontSize}px)</label>
-              <input 
-                type="range" 
-                min="10" 
-                max="22" 
-                value={settings.fontSize} 
-                oninput={(e) => updateSetting('fontSize', Number(e.currentTarget.value))}
-              />
+              <input type="range" min="10" max="22" value={settings.fontSize} oninput={(e) => updateSetting('fontSize', Number(e.currentTarget.value))} />
             </div>
-
-            <!-- Toggle Line Wrap -->
             <div class="setting-row">
               <span>Line Wrapping</span>
-              <input 
-                type="checkbox" 
-                checked={settings.lineWrapping} 
-                onchange={(e) => updateSetting('lineWrapping', e.currentTarget.checked)}
-              />
+              <input type="checkbox" checked={settings.lineWrapping} onchange={(e) => updateSetting('lineWrapping', e.currentTarget.checked)} />
             </div>
-
-            <!-- Toggle Vim Mode -->
             <div class="setting-row">
               <span>Enable Vim Mode</span>
-              <input 
-                type="checkbox" 
-                checked={settings.vimEnabled} 
-                onchange={(e) => updateSetting('vimEnabled', e.currentTarget.checked)}
-              />
+              <input type="checkbox" checked={settings.vimEnabled} onchange={(e) => updateSetting('vimEnabled', e.currentTarget.checked)} />
             </div>
           </div>
         </div>
@@ -521,17 +619,22 @@
     {/if}
   </div>
 
-  <!-- Statusline -->
+  <!-- Statusline with Active Pane indicator -->
   <footer class="me-statusline">
     <div class="status-sec-left">
-      <span class="mode-tag" class:insert={vimMode === 'INSERT'}>{vimMode}</span>
+      <span class="mode-tag" class:insert={(activePaneIndex === 0 ? pane0VimMode : pane1VimMode) === 'INSERT'}>
+        {activePaneIndex === 0 ? pane0VimMode : pane1VimMode}
+      </span>
       <span class="status-info">{statusMessage}</span>
+      {#if isEditorSplit}
+        <span class="pane-status-pill">PANE {activePaneIndex + 1}</span>
+      {/if}
     </div>
     <div class="status-sec-right">
       <span>{settings.theme}</span>
       <span>UTF-8</span>
-      <span>{activeTabPath.split('.').pop() || 'plain'}</span>
-      <span>Ln {cursorCoords.split(':')[0]}, Col {cursorCoords.split(':')[1]}</span>
+      <span>{(activePaneIndex === 0 ? pane0Path : pane1Path).split('.').pop() || 'plain'}</span>
+      <span> {activePaneIndex === 0 ? pane0Cursor : pane1Cursor}</span>
     </div>
   </footer>
 </div>
@@ -550,11 +653,14 @@
   .btn-connect { background-color: #238636; color: #fff; border: none; font-weight: 600; font-size: 11px; padding: 4px 8px; border-radius: 4px; cursor: pointer; }
   .icon-btn { background: transparent; border: none; color: #8b949e; padding: 4px; cursor: pointer; display: flex; }
   .icon-btn:hover { color: #c9d1d9; }
+  .icon-btn.active-tool { color: #58a6ff; background-color: #21262d; border-radius: 3px; }
+  
   .me-tabbar { display: flex; height: 29px; background-color: #0d1117; border-bottom: 1px solid #21262d; overflow-x: auto; }
   .tab-pill { display: flex; align-items: center; gap: 6px; height: 100%; background-color: #161b22; border: none; border-right: 1px solid #21262d; color: #8b949e; padding: 0 10px; font-size: 11px; cursor: pointer; }
   .tab-pill.active-tab { background-color: #0d1117; color: #58a6ff; border-top: 2px solid #58a6ff; }
   .dirty-dot { color: #d29922; font-size: 10px; }
   .tab-close:hover { background-color: #30363d; color: #fff; }
+  
   .me-workspace { display: flex; flex: 1; overflow: hidden; position: relative; }
   .me-sidebar { width: 220px; background-color: #0d1117; border-right: 1px solid #21262d; display: flex; flex-direction: column; flex-shrink: 0; }
   .sidebar-header { display: flex; justify-content: space-between; align-items: center; padding: 6px 10px; font-size: 10px; font-weight: 700; text-transform: uppercase; color: #8b949e; border-bottom: 1px solid #21262d; }
@@ -574,14 +680,34 @@
   .node-actions { display: none; gap: 4px; margin-left: auto; }
   .node-btn { background: transparent; border: none; color: #8b949e; cursor: pointer; }
   .empty-tree { padding: 12px; font-size: 11px; color: #484f58; text-align: center; }
+
+  /* Editor Stage & Split Panes */
   .me-stage { display: flex; flex-direction: column; flex: 1; min-width: 0; background-color: #0d1117; }
+  .split-stage-container { flex: 1; display: flex; overflow: hidden; position: relative; }
+  .editor-pane-wrapper { display: flex; flex-direction: column; flex: 1; height: 100%; width: 100%; overflow: hidden; border: 1px solid transparent; }
+  .editor-pane-wrapper.active-pane { border-color: #21262d; }
+  .split-pane-header { display: flex; justify-content: space-between; align-items: center; background-color: #11161d; border-bottom: 1px solid #21262d; padding: 2px 8px; font-size: 10px; color: #8b949e; }
+  .pane-tag { font-size: 9px; background-color: #21262d; color: #58a6ff; padding: 0 4px; border-radius: 2px; }
+
+  :global(.splitpanes.default-theme .splitpanes__splitter) {
+    background-color: #21262d;
+    border: none;
+  }
+  :global(.splitpanes.default-theme .splitpanes__splitter:hover) {
+    background-color: #1f6feb;
+  }
+
   .mobile-keys { display: flex; gap: 4px; padding: 3px 6px; background-color: #161b22; border-top: 1px solid #21262d; overflow-x: auto; }
   .key-item { background-color: #21262d; border: 1px solid #30363d; color: #c9d1d9; padding: 2px 8px; border-radius: 3px; font-weight: 600; font-size: 11px; }
+
   .me-statusline { display: flex; justify-content: space-between; align-items: center; height: 22px; background-color: #161b22; border-top: 1px solid #21262d; padding: 0 8px; font-size: 11px; }
   .status-sec-left, .status-sec-right { display: flex; align-items: center; gap: 8px; }
   .mode-tag { background-color: #1f6feb; color: #fff; font-weight: 700; padding: 0 5px; border-radius: 2px; }
   .mode-tag.insert { background-color: #238636; }
   .status-info { color: #8b949e; }
+  .pane-status-pill { background-color: #30363d; color: #58a6ff; font-size: 9px; font-weight: 700; padding: 1px 4px; border-radius: 2px; }
+
+  /* Modals */
   .dialog-backdrop, .palette-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,0.65); display: flex; justify-content: center; align-items: center; z-index: 999; }
   .palette-backdrop { padding-top: 40px; align-items: flex-start; }
   .dialog-card, .palette-window, .settings-modal { background-color: #161b22; border: 1px solid #30363d; border-radius: 6px; width: 310px; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
