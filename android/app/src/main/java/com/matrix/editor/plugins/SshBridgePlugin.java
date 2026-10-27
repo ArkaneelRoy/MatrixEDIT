@@ -30,7 +30,6 @@ public class SshBridgePlugin extends Plugin {
     private Session session;
     private ChannelSftp sftpChannel;
 
-    // Concurrent multi-session mapping for split terminal channels
     private final Map<String, ChannelShell> shellChannels = new ConcurrentHashMap<>();
     private final Map<String, OutputStream> shellOutputs = new ConcurrentHashMap<>();
 
@@ -50,17 +49,27 @@ public class SshBridgePlugin extends Plugin {
                 session.setConfig("StrictHostKeyChecking", "no");
                 session.connect(15000);
 
-                // Open primary SFTP Channel
                 Channel sftp = session.openChannel("sftp");
                 sftp.connect(10000);
                 sftpChannel = (ChannelSftp) sftp;
 
-                // Spawn default initial terminal (id: "term-1")
                 createShellInstance("term-1");
 
                 call.resolve();
             } catch (Exception e) {
                 call.reject("SSH Connection Failed: " + e.getMessage());
+            }
+        }).start();
+    }
+
+    @PluginMethod
+    public void disconnect(PluginCall call) {
+        new Thread(() -> {
+            try {
+                disconnectChannels();
+                call.resolve();
+            } catch (Exception e) {
+                call.reject("Error during disconnect: " + e.getMessage());
             }
         }).start();
     }
@@ -220,7 +229,6 @@ public class SshBridgePlugin extends Plugin {
                 }
                 byte[] bytes = content.getBytes(StandardCharsets.UTF_8);
                 ByteArrayInputStream in = new ByteArrayInputStream(bytes);
-                // OVERWRITE flag guarantees existing files get replaced cleanly
                 sftpChannel.put(in, path, ChannelSftp.OVERWRITE);
                 in.close();
 
@@ -315,7 +323,6 @@ public class SshBridgePlugin extends Plugin {
         new Thread(() -> {
             try {
                 if (isDir) {
-                    // Recursive removal for directories via SSH exec command
                     ChannelExec execChannel = (ChannelExec) session.openChannel("exec");
                     execChannel.setCommand("rm -rf \"" + path + "\"");
                     execChannel.connect();

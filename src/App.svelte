@@ -26,7 +26,7 @@
     Settings as SettingsIcon,
     Columns2,
     Rows2,
-    Check
+    LogOut
   } from 'lucide-svelte';
 
   // --- State ---
@@ -137,6 +137,18 @@
     } catch (err: any) {
       statusMessage = 'Failed';
       alert('SSH Connection Failed: ' + (err?.message || err));
+    }
+  }
+
+  async function disconnectSsh() {
+    try {
+      await Ssh.disconnect();
+    } catch (_) {
+    } finally {
+      isConnected = false;
+      statusMessage = 'Disconnected';
+      tree = [];
+      allFlattenedFiles = [];
     }
   }
 
@@ -256,7 +268,6 @@
       return;
     }
 
-    // Direct read from Ace Editor instance
     const freshContent = editorInstance?.getValue() ?? (isFirst ? pane0Content : pane1Content);
 
     try {
@@ -358,7 +369,6 @@
 </script>
 
 <div class="me-app">
-  <!-- Top Navigation Header -->
   <header class="me-navbar">
     <div class="nav-brand">
       <button onclick={() => isSidebarOpen = !isSidebarOpen} class="icon-btn" title="Toggle Dock (Ctrl+B)">
@@ -398,6 +408,7 @@
       {:else}
         <button onclick={saveActivePane} class="icon-btn" title="Save File (Ctrl+S)"><Save size={14} /></button>
         <button onclick={loadRootDirectory} class="icon-btn" title="Refresh Tree"><RefreshCw size={14} /></button>
+        <button onclick={disconnectSsh} class="icon-btn text-red-400" title="Disconnect SSH"><LogOut size={14} /></button>
       {/if}
 
       <button 
@@ -414,7 +425,6 @@
     </div>
   </header>
 
-  <!-- VS Code Multi-Tab Bar -->
   <div class="me-tabbar">
     {#each openTabs as tab}
       <button 
@@ -440,9 +450,7 @@
     {/each}
   </div>
 
-  <!-- Workspace Shell -->
   <div class="me-workspace">
-    <!-- Tree Explorer -->
     {#if isSidebarOpen}
       <aside class="me-sidebar">
         <div class="sidebar-header">
@@ -493,7 +501,6 @@
       </aside>
     {/if}
 
-    <!-- Center Stage: Ace Split Panes -->
     <main class="me-stage">
       <div 
         bind:this={stageContainerEl} 
@@ -501,7 +508,6 @@
         class:is-vertical={splitDirection === 'vertical'}
         class:is-horizontal={splitDirection === 'horizontal'}
       >
-        <!-- Pane 0 -->
         <div 
           class="editor-pane-wrapper" 
           class:active-pane={activePaneIndex === 0} 
@@ -534,7 +540,6 @@
           />
         </div>
 
-        <!-- Draggable Resizer Split Bar -->
         {#if isEditorSplit}
           <div 
             class="split-resizer" 
@@ -546,7 +551,6 @@
             tabindex="0"
           ></div>
 
-          <!-- Pane 1 -->
           <div 
             class="editor-pane-wrapper" 
             class:active-pane={activePaneIndex === 1} 
@@ -577,7 +581,6 @@
         {/if}
       </div>
 
-      <!-- Quick Action Mobile Key Strip (Vim / Nav) -->
       <div class="mobile-keys">
         {#each ['ESC', ':', '/', 'i', 'w', 'b', '$', '0', '{', '}', ';'] as k}
           <button 
@@ -589,7 +592,6 @@
         {/each}
       </div>
 
-      <!-- Terminal Drawer -->
       <Terminal 
         sshPort={sshPort} 
         isConnected={isConnected} 
@@ -598,7 +600,6 @@
       />
     </main>
 
-    <!-- Settings Modal -->
     {#if showSettingsModal}
       <div onclick={() => showSettingsModal = false} class="dialog-backdrop">
         <div onclick={(e) => e.stopPropagation()} class="settings-modal">
@@ -643,7 +644,6 @@
       </div>
     {/if}
 
-    <!-- Other Modals -->
     {#if showActionModal}
       <div class="dialog-backdrop">
         <div class="dialog-card">
@@ -697,7 +697,6 @@
     {/if}
   </div>
 
-  <!-- Statusline -->
   <footer class="me-statusline">
     <div class="status-sec-left">
       <span class="mode-tag" class:insert={(activePaneIndex === 0 ? pane0VimMode : pane1VimMode) === 'INSERT'}>
@@ -759,7 +758,6 @@
   .node-btn { background: transparent; border: none; color: #8b949e; cursor: pointer; }
   .empty-tree { padding: 12px; font-size: 11px; color: #484f58; text-align: center; }
 
-  /* Editor Stage */
   .me-stage { display: flex; flex-direction: column; flex: 1; min-width: 0; background-color: #0d1117; }
   .split-stage-container { flex: 1; display: flex; overflow: hidden; position: relative; }
   .split-stage-container.is-vertical { flex-direction: row; }
@@ -785,7 +783,6 @@
   .status-info { color: #8b949e; }
   .pane-status-pill { background-color: #30363d; color: #58a6ff; font-size: 9px; font-weight: 700; padding: 1px 4px; border-radius: 2px; }
 
-  /* Modals */
   .dialog-backdrop, .palette-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,0.65); display: flex; justify-content: center; align-items: center; z-index: 999; }
   .palette-backdrop { padding-top: 40px; align-items: flex-start; }
   .dialog-card, .palette-window, .settings-modal { background-color: #161b22; border: 1px solid #30363d; border-radius: 6px; width: 310px; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
