@@ -1,9 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import fuzzysort from 'fuzzysort';
-  import { Splitpanes, Pane } from 'splitpanes';
-  import 'splitpanes/dist/splitpanes.css';
-
   import { Ssh } from './lib/ssh';
   import Editor from './lib/Editor.svelte';
   import Terminal from './lib/Terminal.svelte';
@@ -40,18 +37,19 @@
   let statusMessage = $state('Disconnected');
   let isConnected = $state(false);
 
-  // Split Editor Layout State
+  // Split System (Zero-Dependency Flex Split)
   let isEditorSplit = $state(false);
   let splitDirection = $state<'vertical' | 'horizontal'>('vertical');
   let activePaneIndex = $state<0 | 1>(0);
+  let splitRatio = $state(50); // percentage
 
-  // Pane 0 (Primary)
+  // Pane 0
   let pane0Path = $state<string>('');
-  let pane0Content = $state<string>('');
+  let pane0Content = $state<string>('// Welcome to MatrixEdit (ME)\n// Connect SSH to begin editing.\n');
   let pane0VimMode = $state('NORMAL');
   let pane0Cursor = $state('1:1');
 
-  // Pane 1 (Secondary Split)
+  // Pane 1
   let pane1Path = $state<string>('');
   let pane1Content = $state<string>('');
   let pane1VimMode = $state('NORMAL');
@@ -68,7 +66,7 @@
     vimEnabled: localStorage.getItem('me_vim') !== 'false'
   });
 
-  // Modal States
+  // Modals
   let isPaletteOpen = $state(false);
   let paletteQuery = $state('');
   let allFlattenedFiles = $state<string[]>([]);
@@ -77,7 +75,7 @@
   let actionTargetNode = $state<FileNode | null>(null);
   let actionInputName = $state('');
 
-  // Persistent SSH Settings
+  // Persistent SSH
   let sshHost = $state(localStorage.getItem('me_ssh_host') || '127.0.0.1');
   let sshPort = $state(Number(localStorage.getItem('me_ssh_port')) || 8022);
   let sshUser = $state(localStorage.getItem('me_ssh_user') || '');
@@ -86,6 +84,7 @@
 
   let editorRef0: any;
   let editorRef1: any;
+  let stageContainerEl: HTMLDivElement;
 
   function updateSetting<K extends keyof EditorSettings>(key: K, value: EditorSettings[K]) {
     settings[key] = value;
@@ -291,6 +290,37 @@
     }
   }
 
+  // Pure Drag-to-Resize Splitter Handle
+  function startSplitDrag(e: MouseEvent | TouchEvent) {
+    const isVert = splitDirection === 'vertical';
+    const rect = stageContainerEl.getBoundingClientRect();
+
+    const onMove = (me: MouseEvent | TouchEvent) => {
+      const clientX = 'touches' in me ? me.touches[0].clientX : me.clientX;
+      const clientY = 'touches' in me ? me.touches[0].clientY : me.clientY;
+
+      if (isVert) {
+        const delta = clientX - rect.left;
+        splitRatio = Math.max(15, Math.min(85, (delta / rect.width) * 100));
+      } else {
+        const delta = clientY - rect.top;
+        splitRatio = Math.max(15, Math.min(85, (delta / rect.height) * 100));
+      }
+    };
+
+    const onEnd = () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onEnd);
+      window.removeEventListener('touchmove', onMove);
+      window.removeEventListener('touchend', onEnd);
+    };
+
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onEnd);
+    window.addEventListener('touchmove', onMove);
+    window.addEventListener('touchend', onEnd);
+  }
+
   let paletteResults = $derived(
     paletteQuery.trim() === ''
       ? allFlattenedFiles.slice(0, 10)
@@ -312,7 +342,6 @@
     </div>
 
     <div class="nav-actions">
-      <!-- Split Editor Actions -->
       <button 
         onclick={() => toggleEditorSplit('vertical')} 
         class="icon-btn" 
@@ -342,7 +371,12 @@
         <button onclick={loadRootDirectory} class="icon-btn" title="Refresh Tree"><RefreshCw size={14} /></button>
       {/if}
 
-      <button onclick={() => isTerminalOpen = !isTerminalOpen} class="icon-btn" title="Toggle Terminal">
+      <button 
+        onclick={() => isTerminalOpen = !isTerminalOpen} 
+        class="icon-btn" 
+        class:active-tool={isTerminalOpen}
+        title="Toggle Terminal"
+      >
         <TermIcon size={14} />
       </button>
       <button onclick={() => showSettingsModal = true} class="icon-btn" title="Settings (Ctrl+,)">
@@ -351,7 +385,7 @@
     </div>
   </header>
 
-  <!-- VS Code Multi-Tab Bar -->
+  <!-- Multi-Tab Bar -->
   <div class="me-tabbar">
     {#each openTabs as tab}
       <button 
@@ -423,77 +457,87 @@
       </aside>
     {/if}
 
-    <!-- Center Stage: Split Editor Support -->
+    <!-- Center Stage -->
     <main class="me-stage">
-      <div class="split-stage-container">
-        {#if !isEditorSplit}
-          <!-- Single Pane (Default) -->
-          <div class="editor-pane-wrapper active-pane" onclick={() => activePaneIndex = 0}>
+      <div 
+        bind:this={stageContainerEl} 
+        class="split-stage-container"
+        class:is-vertical={splitDirection === 'vertical'}
+        class:is-horizontal={splitDirection === 'horizontal'}
+      >
+        <!-- Pane 0 -->
+        <div 
+          class="editor-pane-wrapper" 
+          class:active-pane={activePaneIndex === 0} 
+          onclick={() => activePaneIndex = 0}
+          style={isEditorSplit 
+            ? (splitDirection === 'vertical' ? `width: ${splitRatio}%` : `height: ${splitRatio}%`) 
+            : 'flex: 1;'}
+        >
+          {#if isEditorSplit}
+            <div class="split-pane-header">
+              <span>{pane0Path.split('/').pop() || 'untitled'}</span>
+              <span class="pane-tag">Pane 1</span>
+            </div>
+          {/if}
+          <Editor 
+            bind:this={editorRef0}
+            content={pane0Content}
+            filename={pane0Path.split('/').pop() || 'main.go'}
+            bind:vimMode={pane0VimMode}
+            bind:cursorCoords={pane0Cursor}
+            {settings}
+            onContentChange={(val) => {
+              pane0Content = val;
+              const tab = openTabs.find(t => t.path === pane0Path);
+              if (tab) {
+                tab.content = val;
+                tab.isDirty = true;
+              }
+            }}
+          />
+        </div>
+
+        <!-- Draggable Resizer Split Bar -->
+        {#if isEditorSplit}
+          <div 
+            class="split-resizer" 
+            class:resizer-vertical={splitDirection === 'vertical'}
+            class:resizer-horizontal={splitDirection === 'horizontal'}
+            onmousedown={startSplitDrag}
+            ontouchstart={startSplitDrag}
+            role="separator"
+            tabindex="0"
+          ></div>
+
+          <!-- Pane 1 -->
+          <div 
+            class="editor-pane-wrapper" 
+            class:active-pane={activePaneIndex === 1} 
+            onclick={() => activePaneIndex = 1}
+            style={splitDirection === 'vertical' ? `width: ${100 - splitRatio}%` : `height: ${100 - splitRatio}%`}
+          >
+            <div class="split-pane-header">
+              <span>{pane1Path.split('/').pop() || 'untitled'}</span>
+              <span class="pane-tag">Pane 2</span>
+            </div>
             <Editor 
-              bind:this={editorRef0}
-              bind:content={pane0Content}
-              filename={pane0Path.split('/').pop() || 'main.go'}
-              bind:vimMode={pane0VimMode}
-              bind:cursorCoords={pane0Cursor}
-              bind:settings
-              onContentChange={() => {
-                const tab = openTabs.find(t => t.path === pane0Path);
-                if (tab) tab.isDirty = true;
+              bind:this={editorRef1}
+              content={pane1Content}
+              filename={pane1Path.split('/').pop() || 'main.go'}
+              bind:vimMode={pane1VimMode}
+              bind:cursorCoords={pane1Cursor}
+              {settings}
+              onContentChange={(val) => {
+                pane1Content = val;
+                const tab = openTabs.find(t => t.path === pane1Path);
+                if (tab) {
+                  tab.content = val;
+                  tab.isDirty = true;
+                }
               }}
             />
           </div>
-        {:else}
-          <!-- Dual Split Panes via Splitpanes -->
-          <Splitpanes class="me-splitpanes" horizontal={splitDirection === 'horizontal'}>
-            <Pane size={50}>
-              <div 
-                class="editor-pane-wrapper" 
-                class:active-pane={activePaneIndex === 0} 
-                onclick={() => activePaneIndex = 0}
-              >
-                <div class="split-pane-header">
-                  <span>{pane0Path.split('/').pop() || 'untitled'}</span>
-                  <span class="pane-tag">Pane 1</span>
-                </div>
-                <Editor 
-                  bind:this={editorRef0}
-                  bind:content={pane0Content}
-                  filename={pane0Path.split('/').pop() || 'main.go'}
-                  bind:vimMode={pane0VimMode}
-                  bind:cursorCoords={pane0Cursor}
-                  bind:settings
-                  onContentChange={() => {
-                    const tab = openTabs.find(t => t.path === pane0Path);
-                    if (tab) tab.isDirty = true;
-                  }}
-                />
-              </div>
-            </Pane>
-            <Pane size={50}>
-              <div 
-                class="editor-pane-wrapper" 
-                class:active-pane={activePaneIndex === 1} 
-                onclick={() => activePaneIndex = 1}
-              >
-                <div class="split-pane-header">
-                  <span>{pane1Path.split('/').pop() || 'untitled'}</span>
-                  <span class="pane-tag">Pane 2</span>
-                </div>
-                <Editor 
-                  bind:this={editorRef1}
-                  bind:content={pane1Content}
-                  filename={pane1Path.split('/').pop() || 'main.go'}
-                  bind:vimMode={pane1VimMode}
-                  bind:cursorCoords={pane1Cursor}
-                  bind:settings
-                  onContentChange={() => {
-                    const tab = openTabs.find(t => t.path === pane1Path);
-                    if (tab) tab.isDirty = true;
-                  }}
-                />
-              </div>
-            </Pane>
-          </Splitpanes>
         {/if}
       </div>
 
@@ -511,7 +555,7 @@
         </div>
       {/if}
 
-      <!-- Multi-Session Split Terminal Component -->
+      <!-- Terminal Drawer -->
       <Terminal 
         sshPort={sshPort} 
         isConnected={isConnected} 
@@ -619,7 +663,7 @@
     {/if}
   </div>
 
-  <!-- Statusline with Active Pane indicator -->
+  <!-- Statusline -->
   <footer class="me-statusline">
     <div class="status-sec-left">
       <span class="mode-tag" class:insert={(activePaneIndex === 0 ? pane0VimMode : pane1VimMode) === 'INSERT'}>
@@ -681,21 +725,21 @@
   .node-btn { background: transparent; border: none; color: #8b949e; cursor: pointer; }
   .empty-tree { padding: 12px; font-size: 11px; color: #484f58; text-align: center; }
 
-  /* Editor Stage & Split Panes */
+  /* Editor Stage & Native Resizer */
   .me-stage { display: flex; flex-direction: column; flex: 1; min-width: 0; background-color: #0d1117; }
   .split-stage-container { flex: 1; display: flex; overflow: hidden; position: relative; }
-  .editor-pane-wrapper { display: flex; flex-direction: column; flex: 1; height: 100%; width: 100%; overflow: hidden; border: 1px solid transparent; }
-  .editor-pane-wrapper.active-pane { border-color: #21262d; }
+  .split-stage-container.is-vertical { flex-direction: row; }
+  .split-stage-container.is-horizontal { flex-direction: column; }
+  
+  .editor-pane-wrapper { display: flex; flex-direction: column; overflow: hidden; border: 1px solid transparent; min-width: 50px; min-height: 50px; }
+  .editor-pane-wrapper.active-pane { border-color: #30363d; }
   .split-pane-header { display: flex; justify-content: space-between; align-items: center; background-color: #11161d; border-bottom: 1px solid #21262d; padding: 2px 8px; font-size: 10px; color: #8b949e; }
   .pane-tag { font-size: 9px; background-color: #21262d; color: #58a6ff; padding: 0 4px; border-radius: 2px; }
 
-  :global(.splitpanes.default-theme .splitpanes__splitter) {
-    background-color: #21262d;
-    border: none;
-  }
-  :global(.splitpanes.default-theme .splitpanes__splitter:hover) {
-    background-color: #1f6feb;
-  }
+  .split-resizer { background-color: #21262d; z-index: 10; }
+  .split-resizer:hover { background-color: #1f6feb; }
+  .resizer-vertical { width: 4px; height: 100%; cursor: col-resize; }
+  .resizer-horizontal { height: 4px; width: 100%; cursor: row-resize; }
 
   .mobile-keys { display: flex; gap: 4px; padding: 3px 6px; background-color: #161b22; border-top: 1px solid #21262d; overflow-x: auto; }
   .key-item { background-color: #21262d; border: 1px solid #30363d; color: #c9d1d9; padding: 2px 8px; border-radius: 3px; font-weight: 600; font-size: 11px; }

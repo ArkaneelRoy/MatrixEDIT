@@ -1,22 +1,16 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { EditorState, Compartment } from '@codemirror/state';
-  import { EditorView, keymap, lineNumbers } from '@codemirror/view';
-  import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
-  import { autocompletion, closeBrackets } from '@codemirror/autocomplete';
+  import { EditorView, keymap, lineNumbers, highlightActiveLineGutter, highlightSpecialChars } from '@codemirror/view';
+  import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
+  import { autocompletion, closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete';
   import { vim, getCM } from '@replit/codemirror-vim';
 
   // Themes
   import { oneDark } from '@codemirror/theme-one-dark';
-  import { 
-    dracula, 
-    tokyoNight, 
-    nord, 
-    githubDark, 
-    materialDark 
-  } from '@uiw/codemirror-themes-all';
+  import { dracula, tokyoNight, nord, githubDark, materialDark } from '@uiw/codemirror-themes-all';
 
-  // Modern Language Grammars
+  // Languages
   import { javascript } from '@codemirror/lang-javascript';
   import { go } from '@codemirror/lang-go';
   import { python } from '@codemirror/lang-python';
@@ -35,7 +29,6 @@
   import { vue } from '@codemirror/lang-vue';
   import { wast } from '@codemirror/lang-wast';
 
-  // Legacy StreamParser Modes
   import { StreamLanguage } from '@codemirror/language';
   import { shell } from '@codemirror/legacy-modes/mode/shell';
   import { fortran } from '@codemirror/legacy-modes/mode/fortran';
@@ -47,26 +40,26 @@
 
   import type { EditorSettings } from './types';
 
-  let { 
-    content = $bindable(''), 
-    filename = 'main.go', 
+  let {
+    content = '',
+    filename = 'main.go',
     vimMode = $bindable('NORMAL'),
     cursorCoords = $bindable('1:1'),
-    settings = $bindable<EditorSettings>({
+    settings = {
       theme: 'oneDark',
       font: "'Fira Code', monospace",
       fontSize: 13,
       tabSize: 4,
       lineWrapping: false,
       vimEnabled: true
-    }),
+    } as EditorSettings,
     onContentChange = (val: string) => {}
   } = $props();
 
   let containerEl: HTMLDivElement;
   let view: EditorView;
+  let currentLoadedFile = '';
 
-  // Compartments for dynamic reconfiguration
   const langCompartment = new Compartment();
   const themeCompartment = new Compartment();
   const fontCompartment = new Compartment();
@@ -109,8 +102,6 @@
       case 'vue': return vue();
       case 'wat':
       case 'wast': return wast();
-
-      // Legacy stream modes
       case 'sh':
       case 'bash':
       case 'zsh': return StreamLanguage.define(shell);
@@ -144,18 +135,29 @@
   function resolveFontExtension(font: string, size: number) {
     return EditorView.theme({
       '&': { height: '100%', fontSize: `${size}px`, fontFamily: font },
-      '.cm-scroller': { fontFamily: font, lineHeight: '1.5' },
-      '.cm-content': { caretColor: '#58a6ff' },
-      '&.cm-focused .cm-cursor': { borderLeftColor: '#58a6ff' },
-      '.cm-gutters': { borderRight: '1px solid #30363d' }
+      '.cm-scroller': { fontFamily: font, lineHeight: '1.5', overflow: 'auto' },
+      '.cm-content': { 
+        caretColor: '#58a6ff',
+        padding: '6px 0',
+        minHeight: '100%'
+      },
+      '&.cm-focused': { outline: 'none' },
+      '&.cm-focused .cm-cursor': { borderLeftColor: '#58a6ff', borderLeftWidth: '2px' },
+      '.cm-gutters': { backgroundColor: '#0d1117', borderRight: '1px solid #30363d', color: '#484f58' },
+      '.cm-activeLine': { backgroundColor: 'rgba(255, 255, 255, 0.04)' },
+      '.cm-activeLineGutter': { backgroundColor: '#161b22', color: '#c9d1d9' }
     });
   }
 
   onMount(() => {
+    currentLoadedFile = filename;
+
     const startState = EditorState.create({
       doc: content,
       extensions: [
         lineNumbers(),
+        highlightActiveLineGutter(),
+        highlightSpecialChars(),
         history(),
         closeBrackets(),
         autocompletion(),
@@ -164,8 +166,7 @@
         fontCompartment.of(resolveFontExtension(settings.font, settings.fontSize)),
         langCompartment.of(resolveLanguage(filename)),
         wrapCompartment.of(settings.lineWrapping ? EditorView.lineWrapping : []),
-        keymap.of([...defaultKeymap, ...historyKeymap]),
-        EditorView.editable.of(true),
+        keymap.of([...defaultKeymap, ...historyKeymap, ...closeBracketsKeymap, indentWithTab]),
         EditorView.updateListener.of((update) => {
           if (settings.vimEnabled) {
             const cm = getCM(view);
@@ -182,7 +183,6 @@
 
           if (update.docChanged) {
             const val = view.state.doc.toString();
-            content = val;
             onContentChange(val);
           }
         })
@@ -190,60 +190,43 @@
     });
 
     view = new EditorView({ state: startState, parent: containerEl });
+
     return () => view?.destroy();
   });
 
-  // Hot-swap grammar on tab switch
+  // Switch buffer only when the active filename changes
   $effect(() => {
-    if (view && filename) {
+    if (view && filename !== currentLoadedFile) {
+      currentLoadedFile = filename;
       view.dispatch({
+        changes: { from: 0, to: view.state.doc.length, insert: content },
         effects: langCompartment.reconfigure(resolveLanguage(filename))
       });
     }
   });
 
-  // Hot-swap Theme
+  // Dynamic Theme, Font, and Options Hot-Reloading
   $effect(() => {
     if (view && settings.theme) {
-      view.dispatch({
-        effects: themeCompartment.reconfigure(resolveThemeExtension(settings.theme))
-      });
+      view.dispatch({ effects: themeCompartment.reconfigure(resolveThemeExtension(settings.theme)) });
     }
   });
 
-  // Hot-swap Font & Font Size
   $effect(() => {
     if (view && (settings.font || settings.fontSize)) {
-      view.dispatch({
-        effects: fontCompartment.reconfigure(resolveFontExtension(settings.font, settings.fontSize))
-      });
+      view.dispatch({ effects: fontCompartment.reconfigure(resolveFontExtension(settings.font, settings.fontSize)) });
     }
   });
 
-  // Hot-swap Line Wrapping
   $effect(() => {
     if (view) {
-      view.dispatch({
-        effects: wrapCompartment.reconfigure(settings.lineWrapping ? EditorView.lineWrapping : [])
-      });
+      view.dispatch({ effects: wrapCompartment.reconfigure(settings.lineWrapping ? EditorView.lineWrapping : []) });
     }
   });
 
-  // Hot-swap Vim mode
   $effect(() => {
     if (view) {
-      view.dispatch({
-        effects: vimCompartment.reconfigure(settings.vimEnabled ? vim({ status: false }) : [])
-      });
-    }
-  });
-
-  // External document changes
-  $effect(() => {
-    if (view && content !== view.state.doc.toString()) {
-      view.dispatch({
-        changes: { from: 0, to: view.state.doc.length, insert: content }
-      });
+      view.dispatch({ effects: vimCompartment.reconfigure(settings.vimEnabled ? vim({ status: false }) : []) });
     }
   });
 
@@ -253,6 +236,10 @@
     if (!cm) return;
     if (key === 'ESC') cm.handleKey('Esc');
     else cm.handleKey(key);
+  }
+
+  export function focus() {
+    view?.focus();
   }
 </script>
 
@@ -281,8 +268,10 @@
     height: 100% !important;
     outline: none !important;
     text-align: left !important;
+    user-select: text !important;
+    -webkit-user-select: text !important;
   }
   :global(.cm-scroller) {
-    overflow: auto;
+    overflow: auto !important;
   }
 </style>

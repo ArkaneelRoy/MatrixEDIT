@@ -27,7 +27,6 @@
   let height = $state(180);
   let isDragging = $state(false);
 
-  // Svelte Action replacing the inline arrow function
   const mountSessionAction: Action<HTMLDivElement, SessionEntry> = (node, session) => {
     const term = new Terminal({
       theme: {
@@ -68,15 +67,13 @@
 
     Ssh.addListener('terminalData', ({ id, chunk }) => {
       const match = sessions.find(s => s.id === id);
-      if (match?.term) {
-        match.term.write(chunk);
-      }
-    }).then(handle => {
-      removeListener = handle.remove;
+      if (match?.term) match.term.write(chunk);
+    }).then(h => {
+      removeListener = h.remove;
     });
 
     const handleWindowResize = () => {
-      sessions.forEach(s => s.fit?.fit());
+      if (isOpen) sessions.forEach(s => s.fit?.fit());
     };
     window.addEventListener('resize', handleWindowResize);
 
@@ -85,6 +82,13 @@
       if (removeListener) removeListener();
       sessions.forEach(s => s.term?.dispose());
     };
+  });
+
+  // Fit automatically whenever drawer is opened
+  $effect(() => {
+    if (isOpen) {
+      setTimeout(() => sessions.forEach(s => s.fit?.fit()), 100);
+    }
   });
 
   async function addSplitSession() {
@@ -99,9 +103,7 @@
       await Ssh.openTerminalSession({ id: nextId }).catch(() => {});
     }
 
-    setTimeout(() => {
-      sessions.forEach(s => s.fit?.fit());
-    }, 150);
+    setTimeout(() => sessions.forEach(s => s.fit?.fit()), 150);
   }
 
   async function closeSession(id: string) {
@@ -114,12 +116,8 @@
       const target = sessions[idx];
       target.term?.dispose();
       sessions.splice(idx, 1);
-      if (isConnected) {
-        Ssh.closeTerminalSession({ id }).catch(() => {});
-      }
-      setTimeout(() => {
-        sessions.forEach(s => s.fit?.fit());
-      }, 150);
+      if (isConnected) Ssh.closeTerminalSession({ id }).catch(() => {});
+      setTimeout(() => sessions.forEach(s => s.fit?.fit()), 150);
     }
   }
 
@@ -152,48 +150,42 @@
   }
 </script>
 
-{#if isOpen}
-  <div class="term-dock" style="height: {height}px">
-    <div 
-      class="drag-handle" 
-      onmousedown={startResize} 
-      ontouchstart={startResize}
-      role="separator"
-      tabindex="0"
-    >
-      <GripHorizontal size={14} class="grip-icon" />
-    </div>
-
-    <div class="term-header">
-      <div class="header-left">
-        <span>TERMINAL (PTY {sshPort})</span>
-        <button onclick={addSplitSession} class="tool-btn" title="Add Split Terminal">
-          <Columns2 size={12} /> Split
-        </button>
-      </div>
-      <button onclick={() => isOpen = false} class="close-btn"><X size={12} /></button>
-    </div>
-
-    <div class="split-viewport-container">
-      {#each sessions as s, i (s.id)}
-        <div class="term-pane" style="flex: 1;">
-          <div class="pane-tabbar">
-            <span>{s.title}</span>
-            <button onclick={() => closeSession(s.id)} class="tab-close-btn"><X size={10} /></button>
-          </div>
-          <!-- Clean Svelte Action binding -->
-          <div 
-            class="canvas-mount"
-            use:mountSessionAction={s}
-          ></div>
-        </div>
-        {#if i < sessions.length - 1}
-          <div class="pane-divider"></div>
-        {/if}
-      {/each}
-    </div>
+<div class="term-dock" class:hidden-dock={!isOpen} style="height: {height}px">
+  <div 
+    class="drag-handle" 
+    onmousedown={startResize} 
+    ontouchstart={startResize}
+    role="separator"
+    tabindex="0"
+  >
+    <GripHorizontal size={14} class="grip-icon" />
   </div>
-{/if}
+
+  <div class="term-header">
+    <div class="header-left">
+      <span>TERMINAL (PTY {sshPort})</span>
+      <button onclick={addSplitSession} class="tool-btn" title="Add Split Terminal">
+        <Columns2 size={12} /> Split
+      </button>
+    </div>
+    <button onclick={() => isOpen = false} class="close-btn"><X size={12} /></button>
+  </div>
+
+  <div class="split-viewport-container">
+    {#each sessions as s, i (s.id)}
+      <div class="term-pane" style="flex: 1;">
+        <div class="pane-tabbar">
+          <span>{s.title}</span>
+          <button onclick={() => closeSession(s.id)} class="tab-close-btn"><X size={10} /></button>
+        </div>
+        <div class="canvas-mount" use:mountSessionAction={s}></div>
+      </div>
+      {#if i < sessions.length - 1}
+        <div class="pane-divider"></div>
+      {/if}
+    {/each}
+  </div>
+</div>
 
 <style>
   .term-dock {
@@ -203,6 +195,9 @@
     border-top: 1px solid #30363d;
     position: relative;
     width: 100%;
+  }
+  .hidden-dock {
+    display: none !important;
   }
   .drag-handle {
     height: 6px;
