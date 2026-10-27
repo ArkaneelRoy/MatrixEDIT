@@ -13,13 +13,13 @@ export interface TabItem {
   isDirty: boolean;
 }
 
-export type EditorTheme = 
-  | 'oneDark' 
+export type AceTheme = 
+  | 'one_dark'
+  | 'monokai' 
   | 'dracula' 
-  | 'tokyoNight' 
-  | 'nord' 
-  | 'githubDark' 
-  | 'materialDark';
+  | 'nord_dark' 
+  | 'gruvbox' 
+  | 'tomorrow_night';
 
 export type EditorFont = 
   | "'Fira Code', monospace" 
@@ -27,10 +27,11 @@ export type EditorFont =
   | "monospace";
 
 export interface EditorSettings {
-  theme: EditorTheme;
+  theme: AceTheme;
   font: EditorFont;
   fontSize: number;
   tabSize: number;
   lineWrapping: boolean;
   vimEnabled: boolean;
+  keyboardHandler: 'vscode' | 'vim';
 }

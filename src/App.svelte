@@ -4,7 +4,7 @@
   import { Ssh } from './lib/ssh';
   import Editor from './lib/Editor.svelte';
   import Terminal from './lib/Terminal.svelte';
-  import type { FileNode, TabItem, EditorSettings, EditorTheme, EditorFont } from './lib/types';
+  import type { FileNode, TabItem, EditorSettings, AceTheme, EditorFont } from './lib/types';
 
   import { 
     Folder, 
@@ -25,7 +25,8 @@
     PanelLeft, 
     Settings as SettingsIcon,
     Columns2,
-    Rows2
+    Rows2,
+    Check
   } from 'lucide-svelte';
 
   // --- State ---
@@ -37,15 +38,15 @@
   let statusMessage = $state('Disconnected');
   let isConnected = $state(false);
 
-  // Split System (Zero-Dependency Flex Split)
+  // Split Screen State
   let isEditorSplit = $state(false);
   let splitDirection = $state<'vertical' | 'horizontal'>('vertical');
   let activePaneIndex = $state<0 | 1>(0);
-  let splitRatio = $state(50); // percentage
+  let splitRatio = $state(50);
 
   // Pane 0
   let pane0Path = $state<string>('');
-  let pane0Content = $state<string>('// Welcome to MatrixEdit (ME)\n// Connect SSH to begin editing.\n');
+  let pane0Content = $state<string>('// MatrixEdit (ME)\n// Connect SSH to open and edit files.\n');
   let pane0VimMode = $state('NORMAL');
   let pane0Cursor = $state('1:1');
 
@@ -58,15 +59,16 @@
   // Settings
   let showSettingsModal = $state(false);
   let settings = $state<EditorSettings>({
-    theme: (localStorage.getItem('me_theme') as EditorTheme) || 'oneDark',
+    theme: (localStorage.getItem('me_theme') as AceTheme) || 'one_dark',
     font: (localStorage.getItem('me_font') as EditorFont) || "'Fira Code', monospace",
     fontSize: Number(localStorage.getItem('me_fontSize')) || 13,
     tabSize: 4,
     lineWrapping: localStorage.getItem('me_lineWrap') === 'true',
-    vimEnabled: localStorage.getItem('me_vim') !== 'false'
+    vimEnabled: localStorage.getItem('me_vim') === 'true',
+    keyboardHandler: 'vscode'
   });
 
-  // Modals
+  // Modal / Quick Open
   let isPaletteOpen = $state(false);
   let paletteQuery = $state('');
   let allFlattenedFiles = $state<string[]>([]);
@@ -75,7 +77,7 @@
   let actionTargetNode = $state<FileNode | null>(null);
   let actionInputName = $state('');
 
-  // Persistent SSH
+  // Persistent SSH Settings
   let sshHost = $state(localStorage.getItem('me_ssh_host') || '127.0.0.1');
   let sshPort = $state(Number(localStorage.getItem('me_ssh_port')) || 8022);
   let sshUser = $state(localStorage.getItem('me_ssh_user') || '');
@@ -192,9 +194,11 @@
     if (activePaneIndex === 0) {
       pane0Path = tab.path;
       pane0Content = tab.content;
+      editorRef0?.setValue(tab.content);
     } else {
       pane1Path = tab.path;
       pane1Content = tab.content;
+      editorRef1?.setValue(tab.content);
     }
     isPaletteOpen = false;
   }
@@ -227,23 +231,49 @@
       const next = openTabs[0];
       pane0Path = next?.path || '';
       pane0Content = next?.content || '';
+      if (next) editorRef0?.setValue(next.content);
     }
     if (pane1Path === path) {
       const next = openTabs[0];
       pane1Path = next?.path || '';
       pane1Content = next?.content || '';
+      if (next) editorRef1?.setValue(next.content);
     }
   }
 
   async function saveActivePane() {
-    const activePath = activePaneIndex === 0 ? pane0Path : pane1Path;
-    const activeContent = activePaneIndex === 0 ? pane0Content : pane1Content;
-    const tab = openTabs.find(t => t.path === activePath);
-    if (!tab || !isConnected) return;
-    await Ssh.writeFile({ path: tab.path, content: activeContent });
-    tab.isDirty = false;
-    statusMessage = `Saved ${tab.name}`;
-    setTimeout(() => { statusMessage = `${sshHost}:${sshPort}`; }, 2000);
+    const isFirst = activePaneIndex === 0;
+    const activePath = isFirst ? pane0Path : pane1Path;
+    const editorInstance = isFirst ? editorRef0 : editorRef1;
+
+    if (!activePath) {
+      statusMessage = 'No file active';
+      return;
+    }
+    if (!isConnected) {
+      statusMessage = 'Not connected';
+      alert('Please connect to SSH before saving.');
+      return;
+    }
+
+    // Direct read from Ace Editor instance
+    const freshContent = editorInstance?.getValue() ?? (isFirst ? pane0Content : pane1Content);
+
+    try {
+      statusMessage = 'Saving...';
+      await Ssh.writeFile({ path: activePath, content: freshContent });
+
+      const tab = openTabs.find(t => t.path === activePath);
+      if (tab) {
+        tab.content = freshContent;
+        tab.isDirty = false;
+      }
+      statusMessage = `Saved ${activePath.split('/').pop()}`;
+      setTimeout(() => { statusMessage = `${sshHost}:${sshPort}`; }, 2000);
+    } catch (err: any) {
+      statusMessage = 'Save Error';
+      alert('Failed to save: ' + (err?.message || err));
+    }
   }
 
   function openCreateModal(type: 'newFile' | 'newFolder') {
@@ -290,7 +320,6 @@
     }
   }
 
-  // Pure Drag-to-Resize Splitter Handle
   function startSplitDrag(e: MouseEvent | TouchEvent) {
     const isVert = splitDirection === 'vertical';
     const rect = stageContainerEl.getBoundingClientRect();
@@ -346,7 +375,7 @@
         onclick={() => toggleEditorSplit('vertical')} 
         class="icon-btn" 
         class:active-tool={isEditorSplit && splitDirection === 'vertical'} 
-        title="Split Editor Right (:vsplit)"
+        title="Split Editor Right"
       >
         <Columns2 size={14} />
       </button>
@@ -354,7 +383,7 @@
         onclick={() => toggleEditorSplit('horizontal')} 
         class="icon-btn" 
         class:active-tool={isEditorSplit && splitDirection === 'horizontal'} 
-        title="Split Editor Down (:split)"
+        title="Split Editor Down"
       >
         <Rows2 size={14} />
       </button>
@@ -367,7 +396,7 @@
       {#if !isConnected}
         <button onclick={() => showConnectDialog = true} class="btn-connect">Connect SSH</button>
       {:else}
-        <button onclick={saveActivePane} class="icon-btn" title="Save (:w)"><Save size={14} /></button>
+        <button onclick={saveActivePane} class="icon-btn" title="Save File (Ctrl+S)"><Save size={14} /></button>
         <button onclick={loadRootDirectory} class="icon-btn" title="Refresh Tree"><RefreshCw size={14} /></button>
       {/if}
 
@@ -385,13 +414,20 @@
     </div>
   </header>
 
-  <!-- Multi-Tab Bar -->
+  <!-- VS Code Multi-Tab Bar -->
   <div class="me-tabbar">
     {#each openTabs as tab}
       <button 
         onclick={() => {
-          if (activePaneIndex === 0) { pane0Path = tab.path; pane0Content = tab.content; }
-          else { pane1Path = tab.path; pane1Content = tab.content; }
+          if (activePaneIndex === 0) { 
+            pane0Path = tab.path; 
+            pane0Content = tab.content;
+            editorRef0?.setValue(tab.content);
+          } else { 
+            pane1Path = tab.path; 
+            pane1Content = tab.content;
+            editorRef1?.setValue(tab.content);
+          }
         }} 
         class="tab-pill" 
         class:active-tab={(activePaneIndex === 0 ? pane0Path : pane1Path) === tab.path}
@@ -457,7 +493,7 @@
       </aside>
     {/if}
 
-    <!-- Center Stage -->
+    <!-- Center Stage: Ace Split Panes -->
     <main class="me-stage">
       <div 
         bind:this={stageContainerEl} 
@@ -541,19 +577,17 @@
         {/if}
       </div>
 
-      <!-- Quick Action Mobile Key Strip -->
-      {#if settings.vimEnabled}
-        <div class="mobile-keys">
-          {#each ['ESC', ':', '/', 'i', 'w', 'b', '$', '0', '{', '}', ';'] as k}
-            <button 
-              onclick={() => (activePaneIndex === 0 ? editorRef0 : editorRef1)?.injectVimKey(k)} 
-              class="key-item"
-            >
-              {k}
-            </button>
-          {/each}
-        </div>
-      {/if}
+      <!-- Quick Action Mobile Key Strip (Vim / Nav) -->
+      <div class="mobile-keys">
+        {#each ['ESC', ':', '/', 'i', 'w', 'b', '$', '0', '{', '}', ';'] as k}
+          <button 
+            onclick={() => (activePaneIndex === 0 ? editorRef0 : editorRef1)?.injectVimKey(k)} 
+            class="key-item"
+          >
+            {k}
+          </button>
+        {/each}
+      </div>
 
       <!-- Terminal Drawer -->
       <Terminal 
@@ -574,14 +608,14 @@
           </div>
           <div class="settings-body">
             <div class="setting-item">
-              <label>Color Theme</label>
-              <select value={settings.theme} onchange={(e) => updateSetting('theme', e.currentTarget.value as EditorTheme)}>
-                <option value="oneDark">One Dark</option>
+              <label>Theme</label>
+              <select value={settings.theme} onchange={(e) => updateSetting('theme', e.currentTarget.value as AceTheme)}>
+                <option value="one_dark">One Dark</option>
                 <option value="dracula">Dracula</option>
-                <option value="tokyoNight">Tokyo Night</option>
-                <option value="nord">Nord</option>
-                <option value="githubDark">GitHub Dark</option>
-                <option value="materialDark">Material Dark</option>
+                <option value="monokai">Monokai</option>
+                <option value="nord_dark">Nord Dark</option>
+                <option value="gruvbox">Gruvbox</option>
+                <option value="tomorrow_night">Tomorrow Night</option>
               </select>
             </div>
             <div class="setting-item">
@@ -601,7 +635,7 @@
               <input type="checkbox" checked={settings.lineWrapping} onchange={(e) => updateSetting('lineWrapping', e.currentTarget.checked)} />
             </div>
             <div class="setting-row">
-              <span>Enable Vim Mode</span>
+              <span>Vim Modal Editing</span>
               <input type="checkbox" checked={settings.vimEnabled} onchange={(e) => updateSetting('vimEnabled', e.currentTarget.checked)} />
             </div>
           </div>
@@ -609,7 +643,7 @@
       </div>
     {/if}
 
-    <!-- Other Modals (CRUD, Palette, SSH) -->
+    <!-- Other Modals -->
     {#if showActionModal}
       <div class="dialog-backdrop">
         <div class="dialog-card">
@@ -667,7 +701,7 @@
   <footer class="me-statusline">
     <div class="status-sec-left">
       <span class="mode-tag" class:insert={(activePaneIndex === 0 ? pane0VimMode : pane1VimMode) === 'INSERT'}>
-        {activePaneIndex === 0 ? pane0VimMode : pane1VimMode}
+        {settings.vimEnabled ? (activePaneIndex === 0 ? pane0VimMode : pane1VimMode) : 'EDIT'}
       </span>
       <span class="status-info">{statusMessage}</span>
       {#if isEditorSplit}
@@ -678,7 +712,7 @@
       <span>{settings.theme}</span>
       <span>UTF-8</span>
       <span>{(activePaneIndex === 0 ? pane0Path : pane1Path).split('.').pop() || 'plain'}</span>
-      <span> {activePaneIndex === 0 ? pane0Cursor : pane1Cursor}</span>
+      <span>Ln {(activePaneIndex === 0 ? pane0Cursor : pane1Cursor).split(':')[0]}, Col {(activePaneIndex === 0 ? pane0Cursor : pane1Cursor).split(':')[1]}</span>
     </div>
   </footer>
 </div>
@@ -725,15 +759,15 @@
   .node-btn { background: transparent; border: none; color: #8b949e; cursor: pointer; }
   .empty-tree { padding: 12px; font-size: 11px; color: #484f58; text-align: center; }
 
-  /* Editor Stage & Native Resizer */
+  /* Editor Stage */
   .me-stage { display: flex; flex-direction: column; flex: 1; min-width: 0; background-color: #0d1117; }
   .split-stage-container { flex: 1; display: flex; overflow: hidden; position: relative; }
   .split-stage-container.is-vertical { flex-direction: row; }
   .split-stage-container.is-horizontal { flex-direction: column; }
   
-  .editor-pane-wrapper { display: flex; flex-direction: column; overflow: hidden; border: 1px solid transparent; min-width: 50px; min-height: 50px; }
+  .editor-pane-wrapper { display: flex; flex-direction: column; overflow: hidden; border: 1px solid transparent; position: relative; min-width: 60px; min-height: 60px; }
   .editor-pane-wrapper.active-pane { border-color: #30363d; }
-  .split-pane-header { display: flex; justify-content: space-between; align-items: center; background-color: #11161d; border-bottom: 1px solid #21262d; padding: 2px 8px; font-size: 10px; color: #8b949e; }
+  .split-pane-header { display: flex; justify-content: space-between; align-items: center; background-color: #11161d; border-bottom: 1px solid #21262d; padding: 2px 8px; font-size: 10px; color: #8b949e; z-index: 5; }
   .pane-tag { font-size: 9px; background-color: #21262d; color: #58a6ff; padding: 0 4px; border-radius: 2px; }
 
   .split-resizer { background-color: #21262d; z-index: 10; }

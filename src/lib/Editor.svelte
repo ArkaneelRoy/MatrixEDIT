@@ -1,42 +1,42 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
-  import { EditorState, Compartment } from '@codemirror/state';
-  import { EditorView, keymap, lineNumbers, highlightActiveLineGutter, highlightSpecialChars } from '@codemirror/view';
-  import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
-  import { autocompletion, closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete';
-  import { vim, getCM } from '@replit/codemirror-vim';
+  import { onMount, onDestroy } from 'svelte';
+  import ace from 'ace-builds';
+
+  // Import base ace modes & themes bundled by Vite
+  import 'ace-builds/src-noconflict/ext-language_tools';
+  import 'ace-builds/src-noconflict/ext-searchbox';
+
+  // Keybindings
+  import 'ace-builds/src-noconflict/keybinding-vim';
+  import 'ace-builds/src-noconflict/keybinding-vscode';
 
   // Themes
-  import { oneDark } from '@codemirror/theme-one-dark';
-  import { dracula, tokyoNight, nord, githubDark, materialDark } from '@uiw/codemirror-themes-all';
+  import 'ace-builds/src-noconflict/theme-one_dark';
+  import 'ace-builds/src-noconflict/theme-monokai';
+  import 'ace-builds/src-noconflict/theme-dracula';
+  import 'ace-builds/src-noconflict/theme-nord_dark';
+  import 'ace-builds/src-noconflict/theme-gruvbox';
+  import 'ace-builds/src-noconflict/theme-tomorrow_night';
 
-  // Languages
-  import { javascript } from '@codemirror/lang-javascript';
-  import { go } from '@codemirror/lang-go';
-  import { python } from '@codemirror/lang-python';
-  import { rust } from '@codemirror/lang-rust';
-  import { cpp } from '@codemirror/lang-cpp';
-  import { java } from '@codemirror/lang-java';
-  import { php } from '@codemirror/lang-php';
-  import { html } from '@codemirror/lang-html';
-  import { css } from '@codemirror/lang-css';
-  import { json } from '@codemirror/lang-json';
-  import { markdown } from '@codemirror/lang-markdown';
-  import { xml } from '@codemirror/lang-xml';
-  import { sql } from '@codemirror/lang-sql';
-  import { yaml } from '@codemirror/lang-yaml';
-  import { sass } from '@codemirror/lang-sass';
-  import { vue } from '@codemirror/lang-vue';
-  import { wast } from '@codemirror/lang-wast';
-
-  import { StreamLanguage } from '@codemirror/language';
-  import { shell } from '@codemirror/legacy-modes/mode/shell';
-  import { fortran } from '@codemirror/legacy-modes/mode/fortran';
-  import { lua } from '@codemirror/legacy-modes/mode/lua';
-  import { gas } from '@codemirror/legacy-modes/mode/gas';
-  import { dockerFile } from '@codemirror/legacy-modes/mode/dockerfile';
-  import { toml } from '@codemirror/legacy-modes/mode/toml';
-  import { diff } from '@codemirror/legacy-modes/mode/diff';
+  // Languages & Grammars
+  import 'ace-builds/src-noconflict/mode-golang';
+  import 'ace-builds/src-noconflict/mode-javascript';
+  import 'ace-builds/src-noconflict/mode-typescript';
+  import 'ace-builds/src-noconflict/mode-python';
+  import 'ace-builds/src-noconflict/mode-rust';
+  import 'ace-builds/src-noconflict/mode-c_cpp';
+  import 'ace-builds/src-noconflict/mode-java';
+  import 'ace-builds/src-noconflict/mode-json';
+  import 'ace-builds/src-noconflict/mode-html';
+  import 'ace-builds/src-noconflict/mode-css';
+  import 'ace-builds/src-noconflict/mode-sh';
+  import 'ace-builds/src-noconflict/mode-markdown';
+  import 'ace-builds/src-noconflict/mode-yaml';
+  import 'ace-builds/src-noconflict/mode-sql';
+  import 'ace-builds/src-noconflict/mode-lua';
+  import 'ace-builds/src-noconflict/mode-fortran';
+  import 'ace-builds/src-noconflict/mode-assembly_x86';
+  import 'ace-builds/src-noconflict/mode-dockerfile';
 
   import type { EditorSettings } from './types';
 
@@ -46,232 +46,222 @@
     vimMode = $bindable('NORMAL'),
     cursorCoords = $bindable('1:1'),
     settings = {
-      theme: 'oneDark',
+      theme: 'one_dark',
       font: "'Fira Code', monospace",
       fontSize: 13,
       tabSize: 4,
       lineWrapping: false,
-      vimEnabled: true
+      vimEnabled: false,
+      keyboardHandler: 'vscode'
     } as EditorSettings,
     onContentChange = (val: string) => {}
   } = $props();
 
-  let containerEl: HTMLDivElement;
-  let view: EditorView;
-  let currentLoadedFile = '';
+  let editorEl: HTMLDivElement;
+  let editor: ace.Ace.Editor;
+  let currentFile = '';
+  let isInternalChange = false;
 
-  const langCompartment = new Compartment();
-  const themeCompartment = new Compartment();
-  const fontCompartment = new Compartment();
-  const wrapCompartment = new Compartment();
-  const vimCompartment = new Compartment();
-
-  function resolveLanguage(file: string) {
-    const ext = file.split('.').pop()?.toLowerCase() || '';
+  function resolveAceMode(fname: string): string {
+    const ext = fname.split('.').pop()?.toLowerCase() || '';
     switch (ext) {
-      case 'go': return go();
+      case 'go': return 'ace/mode/golang';
       case 'js':
       case 'mjs':
-      case 'cjs': return javascript();
-      case 'ts':
-      case 'mts': return javascript({ typescript: true });
-      case 'jsx': return javascript({ jsx: true });
-      case 'tsx': return javascript({ jsx: true, typescript: true });
-      case 'py': return python();
-      case 'rs': return rust();
+      case 'cjs': return 'ace/mode/javascript';
+      case 'ts': return 'ace/mode/typescript';
+      case 'py': return 'ace/mode/python';
+      case 'rs': return 'ace/mode/rust';
       case 'c':
       case 'h':
       case 'cpp':
       case 'cc':
-      case 'cxx':
-      case 'hpp': return cpp();
-      case 'java': return java();
-      case 'php': return php();
-      case 'html':
-      case 'htm': return html();
-      case 'css': return css();
-      case 'scss': return sass();
-      case 'json': return json();
-      case 'md':
-      case 'markdown': return markdown();
-      case 'xml':
-      case 'svg': return xml();
-      case 'sql': return sql();
-      case 'yaml':
-      case 'yml': return yaml();
-      case 'vue': return vue();
-      case 'wat':
-      case 'wast': return wast();
+      case 'hpp': return 'ace/mode/c_cpp';
+      case 'java': return 'ace/mode/java';
+      case 'json': return 'ace/mode/json';
+      case 'html': return 'ace/mode/html';
+      case 'css': return 'ace/mode/css';
       case 'sh':
-      case 'bash':
-      case 'zsh': return StreamLanguage.define(shell);
+      case 'bash': return 'ace/mode/sh';
+      case 'md': return 'ace/mode/markdown';
+      case 'yaml':
+      case 'yml': return 'ace/mode/yaml';
+      case 'sql': return 'ace/mode/sql';
+      case 'lua': return 'ace/mode/lua';
       case 'f':
-      case 'f90':
-      case 'f95': return StreamLanguage.define(fortran);
-      case 'lua': return StreamLanguage.define(lua);
+      case 'f90': return 'ace/mode/fortran';
       case 's':
-      case 'asm': return StreamLanguage.define(gas);
-      case 'toml': return StreamLanguage.define(toml);
-      case 'diff':
-      case 'patch': return StreamLanguage.define(diff);
+      case 'asm': return 'ace/mode/assembly_x86';
       default:
-        if (file.toLowerCase() === 'dockerfile') return StreamLanguage.define(dockerFile);
-        return [];
+        if (fname.toLowerCase() === 'dockerfile') return 'ace/mode/dockerfile';
+        return 'ace/mode/text';
     }
-  }
-
-  function resolveThemeExtension(themeName: string) {
-    switch (themeName) {
-      case 'dracula': return dracula;
-      case 'tokyoNight': return tokyoNight;
-      case 'nord': return nord;
-      case 'githubDark': return githubDark;
-      case 'materialDark': return materialDark;
-      case 'oneDark':
-      default: return oneDark;
-    }
-  }
-
-  function resolveFontExtension(font: string, size: number) {
-    return EditorView.theme({
-      '&': { height: '100%', fontSize: `${size}px`, fontFamily: font },
-      '.cm-scroller': { fontFamily: font, lineHeight: '1.5', overflow: 'auto' },
-      '.cm-content': { 
-        caretColor: '#58a6ff',
-        padding: '6px 0',
-        minHeight: '100%'
-      },
-      '&.cm-focused': { outline: 'none' },
-      '&.cm-focused .cm-cursor': { borderLeftColor: '#58a6ff', borderLeftWidth: '2px' },
-      '.cm-gutters': { backgroundColor: '#0d1117', borderRight: '1px solid #30363d', color: '#484f58' },
-      '.cm-activeLine': { backgroundColor: 'rgba(255, 255, 255, 0.04)' },
-      '.cm-activeLineGutter': { backgroundColor: '#161b22', color: '#c9d1d9' }
-    });
   }
 
   onMount(() => {
-    currentLoadedFile = filename;
+    currentFile = filename;
 
-    const startState = EditorState.create({
-      doc: content,
-      extensions: [
-        lineNumbers(),
-        highlightActiveLineGutter(),
-        highlightSpecialChars(),
-        history(),
-        closeBrackets(),
-        autocompletion(),
-        vimCompartment.of(settings.vimEnabled ? vim({ status: false }) : []),
-        themeCompartment.of(resolveThemeExtension(settings.theme)),
-        fontCompartment.of(resolveFontExtension(settings.font, settings.fontSize)),
-        langCompartment.of(resolveLanguage(filename)),
-        wrapCompartment.of(settings.lineWrapping ? EditorView.lineWrapping : []),
-        keymap.of([...defaultKeymap, ...historyKeymap, ...closeBracketsKeymap, indentWithTab]),
-        EditorView.updateListener.of((update) => {
-          if (settings.vimEnabled) {
-            const cm = getCM(view);
-            if (cm?.state?.vim) vimMode = cm.state.vim.mode.toUpperCase();
-          } else {
-            vimMode = 'EDIT';
-          }
-
-          if (update.selectionSet) {
-            const head = update.state.selection.main.head;
-            const line = update.state.doc.lineAt(head);
-            cursorCoords = `${line.number}:${head - line.from + 1}`;
-          }
-
-          if (update.docChanged) {
-            const val = view.state.doc.toString();
-            onContentChange(val);
-          }
-        })
-      ]
+    // Initialize Ace
+    editor = ace.edit(editorEl, {
+      value: content,
+      mode: resolveAceMode(filename),
+      theme: `ace/theme/${settings.theme}`,
+      fontSize: `${settings.fontSize}px`,
+      fontFamily: settings.font,
+      tabSize: settings.tabSize,
+      useSoftTabs: true,
+      wrap: settings.lineWrapping,
+      showPrintMargin: false,
+      cursorStyle: 'ace',
+      behavioursEnabled: true,
+      wrapBehavioursEnabled: true,
+      autoScrollEditorIntoView: true,
+      enableBasicAutocompletion: true,
+      enableLiveAutocompletion: true,
+      enableSnippets: true
     });
 
-    view = new EditorView({ state: startState, parent: containerEl });
+    // Configure Keyboard Handler (Vim or VSCode)
+    if (settings.vimEnabled) {
+      editor.setKeyboardHandler('ace/keyboard/vim');
+    }
 
-    return () => view?.destroy();
+    // Cursor tracking
+    editor.selection.on('changeCursor', () => {
+      const pos = editor.getCursorPosition();
+      cursorCoords = `${pos.row + 1}:${pos.column + 1}`;
+    });
+
+    // Text mutation & editing event
+    editor.session.on('change', () => {
+      if (!isInternalChange) {
+        const val = editor.getValue();
+        onContentChange(val);
+      }
+    });
+
+    // Ensure touch focus triggers the soft keyboard reliably
+    editorEl.addEventListener('touchstart', () => {
+      editor.focus();
+    }, { passive: true });
+
+    return () => {
+      editor?.destroy();
+    };
   });
 
-  // Switch buffer only when the active filename changes
+  // Hot-reload buffer when switching tabs
   $effect(() => {
-    if (view && filename !== currentLoadedFile) {
-      currentLoadedFile = filename;
-      view.dispatch({
-        changes: { from: 0, to: view.state.doc.length, insert: content },
-        effects: langCompartment.reconfigure(resolveLanguage(filename))
-      });
+    if (editor && filename !== currentFile) {
+      currentFile = filename;
+      isInternalChange = true;
+      editor.setValue(content, -1); // -1 moves cursor to start
+      editor.session.setMode(resolveAceMode(filename));
+      isInternalChange = false;
     }
   });
 
-  // Dynamic Theme, Font, and Options Hot-Reloading
+  // Settings Updates
   $effect(() => {
-    if (view && settings.theme) {
-      view.dispatch({ effects: themeCompartment.reconfigure(resolveThemeExtension(settings.theme)) });
+    if (editor && settings.theme) {
+      editor.setTheme(`ace/theme/${settings.theme}`);
     }
   });
 
   $effect(() => {
-    if (view && (settings.font || settings.fontSize)) {
-      view.dispatch({ effects: fontCompartment.reconfigure(resolveFontExtension(settings.font, settings.fontSize)) });
+    if (editor && settings.fontSize) {
+      editor.setFontSize(`${settings.fontSize}px`);
     }
   });
 
   $effect(() => {
-    if (view) {
-      view.dispatch({ effects: wrapCompartment.reconfigure(settings.lineWrapping ? EditorView.lineWrapping : []) });
+    if (editor && settings.font) {
+      editor.setOption('fontFamily', settings.font);
     }
   });
 
   $effect(() => {
-    if (view) {
-      view.dispatch({ effects: vimCompartment.reconfigure(settings.vimEnabled ? vim({ status: false }) : []) });
+    if (editor) {
+      editor.session.setUseWrapMode(settings.lineWrapping);
     }
   });
 
-  export function injectVimKey(key: string) {
-    if (!settings.vimEnabled) return;
-    const cm = getCM(view);
-    if (!cm) return;
-    if (key === 'ESC') cm.handleKey('Esc');
-    else cm.handleKey(key);
+  $effect(() => {
+    if (editor) {
+      editor.setKeyboardHandler(settings.vimEnabled ? 'ace/keyboard/vim' : null);
+    }
+  });
+
+  export function getValue(): string {
+    return editor ? editor.getValue() : content;
+  }
+
+  export function setValue(newVal: string) {
+    if (editor) {
+      isInternalChange = true;
+      editor.setValue(newVal, -1);
+      isInternalChange = false;
+    }
   }
 
   export function focus() {
-    view?.focus();
+    editor?.focus();
+  }
+
+  export function injectVimKey(key: string) {
+    if (!editor) return;
+    editor.focus();
+    // Pass key input directly to Ace's textarea
+    const textarea = editorEl.querySelector('textarea');
+    if (textarea) {
+      if (key === 'ESC') {
+        const evt = new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true });
+        textarea.dispatchEvent(evt);
+      } else {
+        editor.insert(key);
+      }
+    }
   }
 </script>
 
-<div class="editor-shell">
-  <div bind:this={containerEl} class="cm-mount"></div>
+<div class="ace-wrapper">
+  <div bind:this={editorEl} class="ace-container"></div>
 </div>
 
 <style>
-  .editor-shell {
+  .ace-wrapper {
     display: flex;
     flex: 1;
-    height: 100%;
     width: 100%;
-    overflow: hidden;
+    height: 100%;
     position: relative;
+    overflow: hidden;
     background-color: #0d1117;
   }
-  .cm-mount {
-    flex: 1;
-    height: 100%;
-    width: 100%;
-    overflow: hidden;
-    text-align: left !important;
-  }
-  :global(.cm-editor) {
+  .ace-container {
+    width: 100% !important;
     height: 100% !important;
-    outline: none !important;
-    text-align: left !important;
-    user-select: text !important;
-    -webkit-user-select: text !important;
+    position: absolute !important;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    font-family: inherit !important;
   }
-  :global(.cm-scroller) {
-    overflow: auto !important;
+  :global(.ace_editor) {
+    font-family: inherit !important;
+    line-height: 1.5 !important;
+    background-color: #0d1117 !important;
+  }
+  :global(.ace_gutter) {
+    background-color: #0d1117 !important;
+    color: #484f58 !important;
+    border-right: 1px solid #21262d;
+  }
+  :global(.ace_cursor) {
+    border-left: 2px solid #58a6ff !important;
+  }
+  :global(.ace_active-line) {
+    background-color: rgba(255, 255, 255, 0.04) !important;
   }
 </style>

@@ -13,7 +13,12 @@ import com.jcraft.jsch.ChannelShell;
 import com.jcraft.jsch.JSch;
 import com.jcraft.jsch.Session;
 
-import java.io.*;
+import java.io.BufferedReader;
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.Vector;
@@ -24,8 +29,8 @@ public class SshBridgePlugin extends Plugin {
     private final JSch jsch = new JSch();
     private Session session;
     private ChannelSftp sftpChannel;
-    
-    // Multi-session tracking for split terminals
+
+    // Concurrent multi-session mapping for split terminal channels
     private final Map<String, ChannelShell> shellChannels = new ConcurrentHashMap<>();
     private final Map<String, OutputStream> shellOutputs = new ConcurrentHashMap<>();
 
@@ -45,6 +50,7 @@ public class SshBridgePlugin extends Plugin {
                 session.setConfig("StrictHostKeyChecking", "no");
                 session.connect(15000);
 
+                // Open primary SFTP Channel
                 Channel sftp = session.openChannel("sftp");
                 sftp.connect(10000);
                 sftpChannel = (ChannelSftp) sftp;
@@ -72,7 +78,7 @@ public class SshBridgePlugin extends Plugin {
                 createShellInstance(sessionId);
                 call.resolve();
             } catch (Exception e) {
-                call.reject("Failed to spawn shell: " + e.getMessage());
+                call.reject("Failed to spawn shell session: " + e.getMessage());
             }
         }).start();
     }
@@ -114,7 +120,7 @@ public class SshBridgePlugin extends Plugin {
                 out.flush();
                 call.resolve();
             } else {
-                call.reject("Session not found: " + sessionId);
+                call.reject("Shell session not found: " + sessionId);
             }
         } catch (Exception e) {
             call.reject(e.getMessage());
@@ -124,10 +130,12 @@ public class SshBridgePlugin extends Plugin {
     @PluginMethod
     public void closeTerminalSession(PluginCall call) {
         String sessionId = call.getString("id");
-        ChannelShell shell = shellChannels.remove(sessionId);
-        shellOutputs.remove(sessionId);
-        if (shell != null && shell.isConnected()) {
-            shell.disconnect();
+        if (sessionId != null) {
+            ChannelShell shell = shellChannels.remove(sessionId);
+            shellOutputs.remove(sessionId);
+            if (shell != null && shell.isConnected()) {
+                shell.disconnect();
+            }
         }
         call.resolve();
     }
@@ -137,13 +145,17 @@ public class SshBridgePlugin extends Plugin {
         String path = call.getString("path", ".");
         new Thread(() -> {
             try {
+                if (sftpChannel == null || !sftpChannel.isConnected()) {
+                    call.reject("SFTP not connected");
+                    return;
+                }
                 Vector<ChannelSftp.LsEntry> entries = sftpChannel.ls(path);
                 JSObject ret = new JSObject();
                 JSArray array = new JSArray();
 
                 for (ChannelSftp.LsEntry entry : entries) {
                     String name = entry.getFilename();
-                    if (name.equals(".") || name.equals("..")) continue;
+                    if (".".equals(name) || "..".equals(name)) continue;
 
                     JSObject item = new JSObject();
                     item.put("name", name);
@@ -153,7 +165,7 @@ public class SshBridgePlugin extends Plugin {
                 ret.put("files", array);
                 call.resolve(ret);
             } catch (Exception e) {
-                call.reject(e.getMessage());
+                call.reject("Failed to read directory: " + e.getMessage());
             }
         }).start();
     }
@@ -161,8 +173,17 @@ public class SshBridgePlugin extends Plugin {
     @PluginMethod
     public void readFile(PluginCall call) {
         String path = call.getString("path");
+        if (path == null) {
+            call.reject("Path is required");
+            return;
+        }
+
         new Thread(() -> {
             try {
+                if (sftpChannel == null || !sftpChannel.isConnected()) {
+                    call.reject("SFTP not connected");
+                    return;
+                }
                 InputStream is = sftpChannel.get(path);
                 BufferedReader reader = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8));
                 StringBuilder sb = new StringBuilder();
@@ -171,12 +192,13 @@ public class SshBridgePlugin extends Plugin {
                     sb.append(line).append("\n");
                 }
                 reader.close();
+                is.close();
 
                 JSObject ret = new JSObject();
                 ret.put("content", sb.toString());
                 call.resolve(ret);
             } catch (Exception e) {
-                call.reject(e.getMessage());
+                call.reject("Failed to read file: " + e.getMessage());
             }
         }).start();
     }
@@ -185,14 +207,29 @@ public class SshBridgePlugin extends Plugin {
     public void writeFile(PluginCall call) {
         String path = call.getString("path");
         String content = call.getString("content", "");
+        if (path == null) {
+            call.reject("Path is required");
+            return;
+        }
+
         new Thread(() -> {
             try {
-                ByteArrayInputStream in = new ByteArrayInputStream(content.getBytes(StandardCharsets.UTF_8));
+                if (sftpChannel == null || !sftpChannel.isConnected()) {
+                    call.reject("SFTP channel is not connected");
+                    return;
+                }
+                byte[] bytes = content.getBytes(StandardCharsets.UTF_8);
+                ByteArrayInputStream in = new ByteArrayInputStream(bytes);
+                // OVERWRITE flag guarantees existing files get replaced cleanly
                 sftpChannel.put(in, path, ChannelSftp.OVERWRITE);
                 in.close();
-                call.resolve();
+
+                JSObject ret = new JSObject();
+                ret.put("success", true);
+                ret.put("bytesWritten", bytes.length);
+                call.resolve(ret);
             } catch (Exception e) {
-                call.reject(e.getMessage());
+                call.reject("Failed to write file: " + e.getMessage());
             }
         }).start();
     }
@@ -200,8 +237,17 @@ public class SshBridgePlugin extends Plugin {
     @PluginMethod
     public void createFile(PluginCall call) {
         String path = call.getString("path");
+        if (path == null) {
+            call.reject("Path is required");
+            return;
+        }
+
         new Thread(() -> {
             try {
+                if (sftpChannel == null || !sftpChannel.isConnected()) {
+                    call.reject("SFTP not connected");
+                    return;
+                }
                 ByteArrayInputStream empty = new ByteArrayInputStream(new byte[0]);
                 sftpChannel.put(empty, path, ChannelSftp.OVERWRITE);
                 empty.close();
@@ -215,8 +261,17 @@ public class SshBridgePlugin extends Plugin {
     @PluginMethod
     public void mkdir(PluginCall call) {
         String path = call.getString("path");
+        if (path == null) {
+            call.reject("Path is required");
+            return;
+        }
+
         new Thread(() -> {
             try {
+                if (sftpChannel == null || !sftpChannel.isConnected()) {
+                    call.reject("SFTP not connected");
+                    return;
+                }
                 sftpChannel.mkdir(path);
                 call.resolve();
             } catch (Exception e) {
@@ -229,8 +284,17 @@ public class SshBridgePlugin extends Plugin {
     public void rename(PluginCall call) {
         String oldPath = call.getString("oldPath");
         String newPath = call.getString("newPath");
+        if (oldPath == null || newPath == null) {
+            call.reject("Both oldPath and newPath are required");
+            return;
+        }
+
         new Thread(() -> {
             try {
+                if (sftpChannel == null || !sftpChannel.isConnected()) {
+                    call.reject("SFTP not connected");
+                    return;
+                }
                 sftpChannel.rename(oldPath, newPath);
                 call.resolve();
             } catch (Exception e) {
@@ -243,9 +307,15 @@ public class SshBridgePlugin extends Plugin {
     public void delete(PluginCall call) {
         String path = call.getString("path");
         boolean isDir = call.getBoolean("isDirectory", false);
+        if (path == null) {
+            call.reject("Path is required");
+            return;
+        }
+
         new Thread(() -> {
             try {
                 if (isDir) {
+                    // Recursive removal for directories via SSH exec command
                     ChannelExec execChannel = (ChannelExec) session.openChannel("exec");
                     execChannel.setCommand("rm -rf \"" + path + "\"");
                     execChannel.connect();
@@ -254,6 +324,10 @@ public class SshBridgePlugin extends Plugin {
                     }
                     execChannel.disconnect();
                 } else {
+                    if (sftpChannel == null || !sftpChannel.isConnected()) {
+                        call.reject("SFTP not connected");
+                        return;
+                    }
                     sftpChannel.rm(path);
                 }
                 call.resolve();
